@@ -853,10 +853,9 @@ ExprResult Sema::BuildCXXThrow(SourceLocation OpLoc, Expr *Ex,
       getLangOpts().OpenMPIsTargetDevice && (T.isNVPTX() || T.isAMDGCN());
   // Don't report an error if 'throw' is used in system headers or in an OpenMP
   // target region compiled for a GPU architecture.
-  if (!IsOpenMPGPUTarget && !getLangOpts().CXXExceptions &&
-      !getSourceManager().isInSystemHeader(OpLoc) && !getLangOpts().CUDA) {
+  if (!IsOpenMPGPUTarget && !getLangOpts().CUDA) {
     // Delay error emission for the OpenMP device code.
-    targetDiag(OpLoc, diag::err_exceptions_disabled) << "throw";
+    DiagnoseExceptionUse(OpLoc, /* IsTry */ false);
   }
 
   // In OpenMP target regions, we replace 'throw' with a trap on GPU targets.
