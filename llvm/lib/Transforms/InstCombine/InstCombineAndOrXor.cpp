@@ -4023,6 +4023,72 @@ static Value *FoldOrOfSelectSmaxToAbs(BinaryOperator &I,
   return nullptr;
 }
 
+static Value *FoldOrOfAndsWithSelectToLogical(BinaryOperator &I,
+                                              InstCombiner::BuilderTy &Builder,
+                                              Value *Op0, Value *Op1) {
+  Value *C, *A;
+  if (match(Op0, m_c_LogicalAnd(m_Value(C), m_Value(A)))) {
+    Value *Cond, *B, *False;
+    // (C & A) | (select (C ^ true), B, false) => (C & A) | (!C & B)
+    if (match(Op1, m_Select(m_Value(Cond), m_Value(B), m_Value(False))) &&
+        match(Cond, m_Xor(m_Specific(C), m_One())) && B != A) {
+      if (match(False, m_Zero())) {
+        Value *NotC = Builder.CreateNot(C);
+        Value *SelectToAnd = Builder.CreateAnd(NotC, B);
+        return SelectToAnd;
+      }
+    }
+
+    // (A & C) | (select (A ^ true), B, false) => (A & C) | (!A & B)
+    if (match(Op1, m_Select(m_Value(Cond), m_Value(B), m_Value(False))) &&
+        match(Cond, m_Xor(m_Specific(A), m_One())) && B != C) {
+      if (match(False, m_Zero())) {
+        Value *NotA = Builder.CreateNot(A);
+        Value *SelectToAnd = Builder.CreateAnd(NotA, B);
+        return SelectToAnd;
+      }
+    }
+
+    // (C & A) | (select (C ^ true), false, B) => (C & A) | (C & B)
+    if (match(Op1, m_Select(m_Value(Cond), m_Value(False), m_Value(B))) &&
+        match(Cond, m_Xor(m_Specific(C), m_One())) && B != A) {
+      if (match(False, m_Zero())) {
+        Value *SelectToAnd = Builder.CreateAnd(C, B);
+        return SelectToAnd;
+      }
+    }
+
+    // (C & A) | (select C, B, false) => (C & A) | (C & B)
+    if (match(Op1, m_Select(m_Value(Cond), m_Value(B), m_Value(False))) &&
+        match(Cond, m_Specific(C)) && B != A) {
+      if (match(False, m_Zero())) {
+        Value *SelectToAnd = Builder.CreateAnd(C, B);
+        return SelectToAnd;
+      }
+    }
+
+    // (A & C) | (select (A ^ true), false, B) => (A & C) | (A & B)
+    if (match(Op1, m_Select(m_Value(Cond), m_Value(False), m_Value(B))) &&
+        match(Cond, m_Xor(m_Specific(A), m_One())) && B != C) {
+      if (match(False, m_Zero())) {
+        Value *SelectToAnd = Builder.CreateAnd(A, B);
+        return SelectToAnd;
+      }
+    }
+
+    // (A & C) | (select A, B, false) => (A & C) | (A & B)
+    if (match(Op1, m_Select(m_Value(Cond), m_Value(B), m_Value(False))) &&
+        match(Cond, m_Specific(A)) && B != C) {
+      if (match(False, m_Zero())) {
+        Value *SelectToAnd = Builder.CreateAnd(A, B);
+        return SelectToAnd;
+      }
+    }
+  }
+
+  return nullptr;
+}
+
 // FIXME: We use commutative matchers (m_c_*) for some, but not all, matches
 // here. We should standardize that construct where it is needed or choose some
 // other way to ensure that commutated variants of patterns are not missed.
@@ -4134,6 +4200,20 @@ Instruction *InstCombinerImpl::visitOr(BinaryOperator &I) {
                                m_Deferred(X)))) {
     Value *IncrementY = Builder.CreateAdd(Y, ConstantInt::get(Ty, 1));
     return BinaryOperator::CreateMul(X, IncrementY);
+  }
+
+  // (C & A) | (select (C ^ true), B, false) => (C & A) | (!C & B)
+  // This later gets further optimised to => select C, A, B
+  //
+  // Similarly:
+  // (C & A) | (select (C ^ true), false, B) => (C & A) | (C & B)
+  //   => select C, (A & B), false
+  if (auto *V = FoldOrOfAndsWithSelectToLogical(I, Builder, Op0, Op1)) {
+    return replaceOperand(I, 1, V);
+  }
+
+  if (auto *V = FoldOrOfAndsWithSelectToLogical(I, Builder, Op1, Op0)) {
+    return replaceOperand(I, 0, V);
   }
 
   // (A & C) | (B & D)
